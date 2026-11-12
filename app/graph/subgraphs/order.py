@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.config import load_llm_settings
 from app.graph.state import AgentState
+from app.graph.streaming import USER_FACING_STREAM_TAG
 from app.graph.subgraphs.mcp_result import extract_order_id, extract_payload
 from app.mcp_client.client import invoke_mcp_tool
 
@@ -30,6 +31,22 @@ def _latest_user_text(state: AgentState) -> str:
             content = message.content
             return content if isinstance(content, str) else str(content)
     return ''
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get('text')
+                if isinstance(text, str):
+                    parts.append(text)
+        return ''.join(parts)
+    return '' if content is None else str(content)
 
 
 def _order_items(payload: Any) -> list[dict[str, Any]]:
@@ -136,19 +153,24 @@ async def _summarize_order(user_message: str, payload: Any) -> str:
             http_socket_options=(),
         )
         payload_text = json.dumps(payload, ensure_ascii=False)
-        response = await llm.ainvoke(
-            [
-                SystemMessage(content=ORDER_SUMMARY_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=(
-                        f'用户问题：{user_message}\n'
-                        f'订单查询结果：{payload_text}'
-                    )
-                ),
-            ]
-        )
-        content = response.content
-        summary = content.strip() if isinstance(content, str) else str(content)
+        messages = [
+            SystemMessage(content=ORDER_SUMMARY_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f'用户问题：{user_message}\n'
+                    f'订单查询结果：{payload_text}'
+                )
+            ),
+        ]
+        parts: list[str] = []
+        async for chunk in llm.astream(
+            messages,
+            config={'tags': [USER_FACING_STREAM_TAG]},
+        ):
+            text = _content_text(chunk.content)
+            if text:
+                parts.append(text)
+        summary = ''.join(parts).strip()
         if not summary or _looks_like_raw_json(summary):
             raise ValueError('order summary is empty or still raw JSON')
         return _append_missing_facts(summary, payload)
