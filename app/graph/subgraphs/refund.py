@@ -1,9 +1,11 @@
+import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.core.config import load_im_settings
 from app.graph.state import AgentState
 from app.graph.subgraphs.mcp_result import (
     extract_first_order,
@@ -13,6 +15,7 @@ from app.graph.subgraphs.mcp_result import (
 from app.mcp_client.client import invoke_mcp_tool
 
 REFUND_AMOUNT_LIMIT = 500.0
+logger = logging.getLogger(__name__)
 
 
 def _pending_reply(order_id: str | None, amount: float | None) -> str:
@@ -20,6 +23,35 @@ def _pending_reply(order_id: str | None, amount: float | None) -> str:
         f'订单 {order_id} 金额为 {amount:.2f} 元，'
         '超过 500 元退款规则阈值，已提交人工审核，请等待审批结果。'
     )
+
+
+async def _notify_pending_approval(
+    state: AgentState,
+    order_id: str,
+    amount: float,
+) -> None:
+    settings = load_im_settings()
+    arguments: dict[str, Any] = {
+        'user_id': state['user_id'],
+        'amount': amount,
+        'order_id': order_id,
+        'reason': '用户申请退款，金额超过 500 元，需要人工审批',
+    }
+    if settings.webhook_url:
+        arguments['webhook_url'] = settings.webhook_url
+
+    try:
+        result = await invoke_mcp_tool('send_im_notification', arguments)
+        logger.info(
+            '[refund] IM notification sent order_id=%s result=%s',
+            order_id,
+            result,
+        )
+    except Exception:
+        logger.exception(
+            '[refund] IM notification failed order_id=%s',
+            order_id,
+        )
 
 
 async def fetch_order(state: AgentState) -> dict[str, Any]:
@@ -64,6 +96,8 @@ async def mark_pending(state: AgentState) -> dict[str, Any]:
     amount = state.get('order_amount')
     reply = _pending_reply(order_id, amount)
     print(f'[refund] pending human approval for order_id={order_id} amount={amount}')
+    if isinstance(order_id, str) and amount is not None:
+        await _notify_pending_approval(state, order_id, amount)
     return {
         'messages': [AIMessage(content=reply)],
         'need_human_intervention': True,

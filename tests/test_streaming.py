@@ -66,6 +66,12 @@ async def fake_refund_mcp(
                 }
             ],
         }
+    if tool_name == 'send_im_notification':
+        return {
+            'success': True,
+            'mock': True,
+            'platform': 'mock',
+        }
     raise AssertionError(f'unexpected MCP tool: {tool_name}')
 
 

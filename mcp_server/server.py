@@ -1,6 +1,12 @@
+import os
+from pathlib import Path
 from typing import Any
 
+import httpx
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 
 mcp = FastMCP(
     'ecommerce-order-mock',
@@ -73,6 +79,133 @@ def apply_refund(order_id: str, reason: str = '用户申请退款') -> dict[str,
         'status': 'refunded',
         'reason': reason,
     }
+
+
+def _build_notification_text(
+    user_id: str,
+    amount: float,
+    order_id: str,
+    reason: str,
+) -> str:
+    return (
+        '### 退款人工审批提醒\n'
+        f'- 用户 ID：{user_id}\n'
+        f'- 订单号：{order_id}\n'
+        f'- 退款金额：¥{amount:.2f}\n'
+        f'- 退款原因：{reason}\n'
+        '- 处理状态：等待人工审批\n\n'
+        '请及时登录后台完成审批。'
+    )
+
+
+def _detect_webhook_platform(webhook_url: str) -> str:
+    normalized = webhook_url.lower()
+    if 'dingtalk' in normalized or 'oapi.dingtalk.com' in normalized:
+        return 'dingtalk'
+    return 'feishu'
+
+
+def _build_webhook_payload(platform: str, text: str) -> dict[str, Any]:
+    if platform == 'dingtalk':
+        return {
+            'msgtype': 'markdown',
+            'markdown': {
+                'title': '退款人工审批提醒',
+                'text': text,
+            },
+        }
+    return {
+        'msg_type': 'text',
+        'content': {'text': text},
+    }
+
+
+def _provider_error(platform: str, body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    if platform == 'dingtalk':
+        code = body.get('errcode')
+        if code not in (None, 0, '0'):
+            return f"errcode={code}, errmsg={body.get('errmsg', '')}"
+        return None
+
+    code = body.get('code', body.get('StatusCode'))
+    if code not in (None, 0, '0'):
+        return f"code={code}, msg={body.get('msg', '')}"
+    return None
+
+
+@mcp.tool()
+def send_im_notification(
+    user_id: str,
+    amount: float,
+    order_id: str,
+    reason: str,
+    webhook_url: str | None = None,
+) -> dict[str, Any]:
+    text = _build_notification_text(user_id, amount, order_id, reason)
+    target_url = (webhook_url or os.getenv('IM_WEBHOOK_URL', '')).strip()
+
+    if not target_url:
+        print(
+            '[send_im_notification][MOCK] '
+            f'user_id={user_id} order_id={order_id} amount={amount:.2f}\n{text}'
+        )
+        return {
+            'success': True,
+            'mock': True,
+            'platform': 'mock',
+            'message': text,
+        }
+
+    platform = _detect_webhook_platform(target_url)
+    payload = _build_webhook_payload(platform, text)
+    try:
+        response = httpx.post(target_url, json=payload, timeout=10.0)
+        response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+
+        error = _provider_error(platform, body)
+        if error:
+            print(
+                '[send_im_notification][ERROR] '
+                f'platform={platform} order_id={order_id} {error}'
+            )
+            return {
+                'success': False,
+                'mock': False,
+                'platform': platform,
+                'status_code': response.status_code,
+                'error': error,
+            }
+
+        print(
+            '[send_im_notification][SENT] '
+            f'platform={platform} order_id={order_id} '
+            f'status_code={response.status_code}'
+        )
+        return {
+            'success': True,
+            'mock': False,
+            'platform': platform,
+            'status_code': response.status_code,
+            'message': text,
+        }
+    except httpx.HTTPError as exc:
+        print(
+            '[send_im_notification][ERROR] '
+            f'platform={platform} order_id={order_id} '
+            f'{type(exc).__name__}: {exc}'
+        )
+        return {
+            'success': False,
+            'mock': False,
+            'platform': platform,
+            'error': f'{type(exc).__name__}: {exc}',
+        }
 
 
 if __name__ == '__main__':

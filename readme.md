@@ -135,3 +135,13 @@ ecommerce-agent/
 
 完整启动、触发中断、审批通过/拒绝及状态恢复验证步骤见
 `docs/HITL_TESTING.md`。
+
+### 外部 IM 通知
+
+高额退款进入人工审核前，`refund` 子图会调用 MCP 工具
+`send_im_notification(user_id, amount, order_id, reason, webhook_url)`：
+
+- 在 `.env` 设置 `IM_WEBHOOK_URL` 后发送真实群机器人通知。
+- 飞书地址（`open.feishu.cn` / `larksuite.com`）使用 `msg_type=text` 格式。
+- 钉钉地址（`oapi.dingtalk.com`）使用 `msgtype=markdown` 格式。
+- 未配置地址时在 MCP 服务终端打印 Mock 通知，不影响人工审核流程。

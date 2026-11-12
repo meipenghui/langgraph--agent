@@ -32,6 +32,11 @@ class LLMSettings:
     trust_env: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class IMSettings:
+    webhook_url: str | None = None
+
+
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -169,3 +174,8 @@ def load_llm_settings(config_path: str | Path | None = None) -> LLMSettings:
         max_retries=max_retries,
         trust_env=trust_env,
     )
+
+
+def load_im_settings() -> IMSettings:
+    webhook_url = os.getenv('IM_WEBHOOK_URL', '').strip()
+    return IMSettings(webhook_url=webhook_url or None)
