@@ -2,6 +2,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from app.graph.state import AgentState
 from app.graph.subgraphs.mcp_result import (
@@ -12,6 +13,13 @@ from app.graph.subgraphs.mcp_result import (
 from app.mcp_client.client import invoke_mcp_tool
 
 REFUND_AMOUNT_LIMIT = 500.0
+
+
+def _pending_reply(order_id: str | None, amount: float | None) -> str:
+    return (
+        f'订单 {order_id} 金额为 {amount:.2f} 元，'
+        '超过 500 元退款规则阈值，已提交人工审核，请等待审批结果。'
+    )
 
 
 async def fetch_order(state: AgentState) -> dict[str, Any]:
@@ -47,11 +55,59 @@ def route_refund_rule(state: AgentState) -> str:
     amount = state.get('order_amount')
     order_id = state.get('order_id')
     if order_id is None or amount is None:
-        return 'human_review'
+        return 'missing_info'
     return 'human_review' if amount > REFUND_AMOUNT_LIMIT else 'apply_refund'
 
 
-async def human_review(state: AgentState) -> dict[str, Any]:
+async def mark_pending(state: AgentState) -> dict[str, Any]:
+    order_id = state.get('order_id')
+    amount = state.get('order_amount')
+    reply = _pending_reply(order_id, amount)
+    print(f'[refund] pending human approval for order_id={order_id} amount={amount}')
+    return {
+        'messages': [AIMessage(content=reply)],
+        'need_human_intervention': True,
+        'refund_status': 'pending_human_review',
+    }
+
+
+async def await_approval(state: AgentState) -> dict[str, Any]:
+    order_id = state.get('order_id')
+    amount = state.get('order_amount')
+    pending_reply = _pending_reply(order_id, amount)
+    print(f'[refund] interrupting graph for approval order_id={order_id}')
+    decision = interrupt(
+        {
+            'type': 'refund_approval',
+            'thread_id': state.get('thread_id'),
+            'user_id': state['user_id'],
+            'order_id': order_id,
+            'order_amount': amount,
+            'intent': 'refund',
+            'reply': pending_reply,
+            'message': '退款金额超过 500 元，需要人工审批',
+        }
+    )
+
+    normalized = decision.get('decision') if isinstance(decision, dict) else decision
+    normalized = str(normalized).strip().lower()
+    print(f'[refund] approval decision={normalized} order_id={order_id}')
+
+    if normalized == 'approve':
+        return await apply_refund(state)
+    if normalized == 'reject':
+        reply = f'订单 {order_id} 的退款申请未通过人工审核，已通知您。'
+        rejected_user_id = state['user_id']
+        print(f'[refund] rejected and user notified user_id={rejected_user_id}')
+        return {
+            'messages': [AIMessage(content=reply)],
+            'need_human_intervention': False,
+            'refund_status': 'rejected',
+        }
+    raise ValueError(f'unsupported approval decision: {decision!r}')
+
+
+async def missing_info(state: AgentState) -> dict[str, Any]:
     order_id = state.get('order_id')
     amount = state.get('order_amount')
 
@@ -60,12 +116,9 @@ async def human_review(state: AgentState) -> dict[str, Any]:
     elif amount is None:
         reply = f'订单 {order_id} 的金额信息缺失，已转人工处理。'
     else:
-        reply = (
-            f'订单 {order_id} 金额为 {amount:.2f} 元，'
-            '超过 500 元退款规则阈值，已转人工审核。'
-        )
+        reply = f'订单 {order_id} 的退款信息不完整，已转人工处理。'
 
-    print(f'[refund] human review required for order_id={order_id} amount={amount}')
+    print(f'[refund] missing refund information order_id={order_id} amount={amount}')
     return {
         'messages': [AIMessage(content=reply)],
         'need_human_intervention': True,
@@ -104,17 +157,22 @@ async def apply_refund(state: AgentState) -> dict[str, Any]:
 builder = StateGraph(AgentState)
 builder.add_node('fetch_order', fetch_order)
 builder.add_node('apply_refund', apply_refund)
-builder.add_node('human_review', human_review)
+builder.add_node('mark_pending', mark_pending)
+builder.add_node('await_approval', await_approval)
+builder.add_node('missing_info', missing_info)
 builder.add_edge(START, 'fetch_order')
 builder.add_conditional_edges(
     'fetch_order',
     route_refund_rule,
     {
         'apply_refund': 'apply_refund',
-        'human_review': 'human_review',
+        'human_review': 'mark_pending',
+        'missing_info': 'missing_info',
     },
 )
+builder.add_edge('mark_pending', 'await_approval')
 builder.add_edge('apply_refund', END)
-builder.add_edge('human_review', END)
+builder.add_edge('await_approval', END)
+builder.add_edge('missing_info', END)
 
 refund_subgraph = builder.compile()

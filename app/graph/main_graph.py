@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.core.config import load_llm_settings
@@ -293,4 +294,5 @@ builder.add_edge('usage', END)
 builder.add_edge('refund', END)
 builder.add_edge('fallback', END)
 
-main_graph = builder.compile()
+checkpointer = MemorySaver()
+main_graph = builder.compile(checkpointer=checkpointer)

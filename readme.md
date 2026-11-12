@@ -120,3 +120,16 @@ ecommerce-agent/
 
 **🚀 落地建议**：
 第一阶段先实现 FastAPI + LangGraph 路由 + 独立的 MCP 淘宝订单查询服务，跑通只读的 ReAct 循环；第二阶段叠加 RAG 知识库；第三阶段再攻克高风险的退款 HITL 人工审批流。
+
+## 8. HITL 退款审批后端
+
+退款金额超过 500 元时，`refund` 子图会通过 LangGraph `interrupt()` 挂起，主图使用
+`MemorySaver` 保存中断状态。后端提供以下接口：
+
+- `POST /chat`：触发对话；响应包含本次会话的 `thread_id`。
+- `GET /pending_approvals`：查询当前等待人工审批的会话。
+- `POST /approve`：使用 `user_id`、`thread_id`、`decision` 审批；通过后调用
+  MCP `apply_refund`，拒绝后更新为 `rejected`。
+
+完整启动、触发中断、审批通过/拒绝及状态恢复验证步骤见
+`docs/HITL_TESTING.md`。

@@ -6,15 +6,18 @@ from app.graph.main_graph import main_graph
 
 
 async def run_order_flow() -> None:
+    thread_id = 'test-order-flow'
     result = await main_graph.ainvoke(
         {
             'messages': [HumanMessage(content='帮我查询一下订单状态')],
             'user_id': 'user_001',
             'order_id': None,
+            'thread_id': thread_id,
             'intent': 'order',
             'refund_status': 'not_started',
             'need_human_intervention': False,
-        }
+        },
+        {'configurable': {'thread_id': thread_id}},
     )
 
     contents = [str(message.content) for message in result['messages']]

@@ -19,6 +19,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     user_id: str
     order_id: str | None
+    thread_id: NotRequired[str | None]
     order_amount: NotRequired[float | None]
     intent: Intent
     refund_status: RefundStatus
